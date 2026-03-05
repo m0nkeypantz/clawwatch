@@ -39,6 +39,13 @@ A voice-first AI assistant for Wear OS. Connect it to an OpenClaw gateway, speak
    ./gradlew installDebug
    ```
 
+## Releases
+
+- Pushes to `main` and pull requests build a debug APK in GitHub Actions and upload it as a workflow artifact.
+- Tags matching `v*` build a release APK and attach `app-release-unsigned.apk` to the GitHub release for that tag.
+- Debug builds use the app id suffix `.debug` and version suffix `-debug` so they stay separate from release installs.
+- Release tags should match `app/build.gradle.kts` `versionName` values, for example `v0.1.1`.
+
 ## Configuration
 
 Swipe up on the main screen → tap **Settings** to configure:
