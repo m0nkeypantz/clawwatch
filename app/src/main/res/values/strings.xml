@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClawWatch</string>
+    <string name="mic_button_description">Tap to speak</string>
+    <string name="settings_label">Settings</string>
+    <string name="gateway_url_label">Gateway URL</string>
+    <string name="auth_token_label">Auth Token</string>
+    <string name="connected">Connected</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="connecting">Connecting…</string>
+    <string name="listening">Listening…</string>
+    <string name="thinking">Thinking…</string>
+    <string name="speaking">Speaking…</string>
+    <string name="permission_rationale">Microphone access is needed for voice input.</string>
+    <string name="no_gateway_configured">Tap settings to configure gateway URL</string>
+</resources>

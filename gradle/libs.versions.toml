@@ -1,0 +1,44 @@
+[versions]
+agp = "8.12.0"
+kotlin = "2.1.20"
+wear-compose = "1.5.0"
+compose-bom = "2025.01.01"
+activity-compose = "1.10.1"
+core-ktx = "1.16.0"
+lifecycle = "2.9.0"
+okhttp = "5.0.0-alpha.14"
+kotlinx-serialization = "1.7.3"
+kotlinx-coroutines = "1.9.0"
+datastore = "1.1.4"
+wear-input = "1.2.0-alpha02"
+splashscreen = "1.0.1"
+play-services-location = "21.3.0"
+wear-ambient = "1.4.0"
+
+[libraries]
+wear-compose-material = { module = "androidx.wear.compose:compose-material", version.ref = "wear-compose" }
+wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "wear-compose" }
+wear-compose-navigation = { module = "androidx.wear.compose:compose-navigation", version.ref = "wear-compose" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
+datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+wear-input = { module = "androidx.wear:wear-input", version.ref = "wear-input" }
+splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "splashscreen" }
+play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-services-location" }
+wear-ambient = { module = "androidx.wear:wear", version.ref = "wear-ambient" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
