@@ -84,6 +84,9 @@ class MainViewModel(
     val authToken: StateFlow<String> = settingsStore.authToken
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
+    val selectedModel: StateFlow<String> = settingsStore.selectedModel
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
     val useLocalTts: StateFlow<Boolean> = settingsStore.useLocalTts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
@@ -101,6 +104,9 @@ class MainViewModel(
 
     val rmsFlow: StateFlow<Float> = voiceInput.rmsFlow
     val aiRmsFlow: StateFlow<Float> = voiceOutput.rmsFlow
+    val availableModels: StateFlow<List<String>> = openClawClient.availableModels
+    val modelsLoading: StateFlow<Boolean> = openClawClient.modelsLoading
+    val modelsError: StateFlow<String?> = openClawClient.modelsError
 
     /** Session load: 0.0 = fresh, 1.0 = context full (estimated) */
     private val _sessionLoad = MutableStateFlow(0f)
@@ -165,6 +171,11 @@ class MainViewModel(
                 voiceOutput.setElevenLabsVoiceId(voiceId)
             }
         }
+        viewModelScope.launch {
+            settingsStore.selectedModel.collect { model ->
+                openClawClient.updateSelectedModel(model)
+            }
+        }
 
         // Subscribe to our session key
         openClawClient.subscribeToSession("agent:main:watch")
@@ -193,6 +204,16 @@ class MainViewModel(
         viewModelScope.launch { settingsStore.setUseLocalTts(enabled) }
     }
 
+    fun updateSelectedModel(model: String) {
+        viewModelScope.launch { settingsStore.setSelectedModel(model.trim()) }
+    }
+
+    fun refreshAvailableModels() {
+        viewModelScope.launch {
+            openClawClient.refreshAvailableModels()
+        }
+    }
+
     fun updateElevenLabsApiKey(apiKey: String) {
         viewModelScope.launch { settingsStore.setElevenLabsApiKey(apiKey) }
     }
@@ -216,8 +237,9 @@ class MainViewModel(
             viewModelScope.launch {
                 val url = settingsStore.gatewayUrl.first()
                 val token = settingsStore.authToken.first()
+                val model = settingsStore.selectedModel.first()
                 if (url.isNotBlank() && token.isNotBlank()) {
-                    openClawClient.connect(url, token)
+                    openClawClient.connect(url, token, model)
                 }
             }
         }
@@ -225,11 +247,11 @@ class MainViewModel(
 
     private fun observeSettingsAndConnect() {
         viewModelScope.launch {
-            combine(gatewayUrl, authToken) { url, token ->
-                url to token
-            }.distinctUntilChanged().collect { (url, token) ->
+            combine(gatewayUrl, authToken, selectedModel) { url, token, model ->
+                Triple(url, token, model)
+            }.distinctUntilChanged().collect { (url, token, model) ->
                 if (url.isNotBlank() && token.isNotBlank()) {
-                    openClawClient.connect(url, token)
+                    openClawClient.connect(url, token, model)
                 } else {
                     openClawClient.disconnect()
                 }
@@ -405,7 +427,8 @@ class MainViewModel(
             viewModelScope.launch {
                 val url = settingsStore.gatewayUrl.first()
                 val token = settingsStore.authToken.first()
-                openClawClient.connect(url, token)
+                val model = settingsStore.selectedModel.first()
+                openClawClient.connect(url, token, model)
             }
         }
         messageSent = false

@@ -18,6 +18,7 @@ class SettingsStore(private val context: Context) {
     companion object {
         private val KEY_GATEWAY_URL = stringPreferencesKey("gateway_url")
         private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
+        private val KEY_SELECTED_MODEL = stringPreferencesKey("selected_model")
         private val KEY_USE_LOCAL_TTS = booleanPreferencesKey("use_local_tts")
         private val KEY_ELEVENLABS_API_KEY = stringPreferencesKey("elevenlabs_api_key")
         private val KEY_ELEVENLABS_VOICE_ID = stringPreferencesKey("elevenlabs_voice_id")
@@ -33,6 +34,10 @@ class SettingsStore(private val context: Context) {
 
     val authToken: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[KEY_AUTH_TOKEN] ?: ""
+    }
+
+    val selectedModel: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[KEY_SELECTED_MODEL] ?: ""
     }
 
     val useLocalTts: Flow<Boolean> = context.dataStore.data.map { prefs ->
@@ -73,6 +78,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setAuthToken(token: String) {
         context.dataStore.edit { it[KEY_AUTH_TOKEN] = token }
+    }
+
+    suspend fun setSelectedModel(model: String) {
+        context.dataStore.edit { it[KEY_SELECTED_MODEL] = model }
     }
 
     suspend fun setUseLocalTts(enabled: Boolean) {

@@ -46,13 +46,23 @@ class OpenClawClient {
 
     private val _chatResponse = MutableSharedFlow<ChatResponseEvent>(extraBufferCapacity = 64)
     val chatResponse: SharedFlow<ChatResponseEvent> = _chatResponse
+    private val _availableModels = MutableStateFlow<List<String>>(emptyList())
+    val availableModels: StateFlow<List<String>> = _availableModels
+    private val _modelsLoading = MutableStateFlow(false)
+    val modelsLoading: StateFlow<Boolean> = _modelsLoading
+    private val _modelsError = MutableStateFlow<String?>(null)
+    val modelsError: StateFlow<String?> = _modelsError
 
     private var webSocket: WebSocket? = null
     private val pendingRpc = mutableMapOf<String, CompletableDeferred<InboundFrame>>()
 
     private var gatewayUrl: String = ""
     private var authToken: String = ""
+    private var selectedModel: String = ""
     private val activeRunIds = mutableSetOf<String>()
+    private val internalRunIds = mutableSetOf<String>()
+    private val internalRunBuffers = mutableMapOf<String, StringBuilder>()
+    private val internalRunDeferred = mutableMapOf<String, CompletableDeferred<String>>()
     private val subscribedSessionKeys = mutableSetOf<String>()
 
     private var reconnectAttempt = 0
@@ -109,12 +119,13 @@ class OpenClawClient {
         }
     }
 
-    fun connect(url: String, token: String) {
+    fun connect(url: String, token: String, model: String = selectedModel) {
         Log.d(TAG, "connect() called")
         disconnect()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         gatewayUrl = url.trimEnd('/')
         authToken = token
+        selectedModel = model.trim()
         shouldReconnect = true
         reconnectAttempt = 0
         connectionGeneration++
@@ -137,6 +148,10 @@ class OpenClawClient {
         pendingRpc.values.forEach { it.cancel() }
         pendingRpc.clear()
         activeRunIds.clear()
+        internalRunIds.clear()
+        internalRunBuffers.clear()
+        internalRunDeferred.values.forEach { it.cancel() }
+        internalRunDeferred.clear()
     }
 
     /**
@@ -166,6 +181,33 @@ class OpenClawClient {
      * The actual response text arrives via [chatResponse] as streaming events.
      */
     suspend fun sendChat(message: String): Result<String> = runCatching {
+        sendChatInternal(message, suppressUi = false)
+    }
+
+    suspend fun refreshAvailableModels(): Result<List<String>> = runCatching {
+        _modelsLoading.value = true
+        _modelsError.value = null
+        val response = sendInternalCommand("/model list")
+        val models = parseModelsFromText(response)
+        if (models.isEmpty()) {
+            throw Exception("No models found in gateway response")
+        }
+        _availableModels.value = models
+        models
+    }.onFailure {
+        _modelsError.value = it.message
+    }.also {
+        _modelsLoading.value = false
+    }
+
+    fun updateSelectedModel(model: String) {
+        selectedModel = model.trim()
+        if (_connectionState.value == ConnectionState.CONNECTED && selectedModel.isNotBlank()) {
+            patchSessionModel()
+        }
+    }
+
+    private suspend fun sendChatInternal(message: String, suppressUi: Boolean): String {
         val id = UUID.randomUUID().toString()
         val params = json.encodeToJsonElement(
             ChatSendParams.serializer(),
@@ -177,15 +219,33 @@ class OpenClawClient {
         ).jsonObject
 
         val response = sendRpc(id, Methods.CHAT_SEND, params)
-        if (response.ok == true) {
+        return if (response.ok == true) {
             val runId = response.payload?.jsonObject?.get("runId")?.jsonPrimitive?.content ?: ""
             if (runId.isNotBlank()) {
-                activeRunIds.add(runId)
+                if (suppressUi) {
+                    internalRunIds.add(runId)
+                    internalRunBuffers[runId] = StringBuilder()
+                    internalRunDeferred[runId] = CompletableDeferred()
+                } else {
+                    activeRunIds.add(runId)
+                }
                 Log.d(TAG, "sendChat() runId=$runId")
             }
             runId
         } else {
             throw Exception(response.error?.message ?: "Unknown RPC error")
+        }
+    }
+
+    private suspend fun sendInternalCommand(message: String): String {
+        val runId = sendChatInternal(message, suppressUi = true)
+        val deferred = internalRunDeferred[runId] ?: throw Exception("Internal run not tracked")
+        return try {
+            withTimeout(30_000) { deferred.await() }
+        } finally {
+            internalRunDeferred.remove(runId)
+            internalRunBuffers.remove(runId)
+            internalRunIds.remove(runId)
         }
     }
 
@@ -211,7 +271,7 @@ class OpenClawClient {
 
     /** Patch the session model override on connect */
     private fun patchSessionModel(sessionKey: String = "agent:main:watch") {
-        if (_connectionState.value != ConnectionState.CONNECTED) return
+        if (_connectionState.value != ConnectionState.CONNECTED || selectedModel.isBlank()) return
         scope.launch {
             try {
                 delay(1000) // Wait for connection to fully settle
@@ -219,7 +279,7 @@ class OpenClawClient {
                 val id = UUID.randomUUID().toString()
                 val params = buildJsonObject {
                     put("key", sessionKey)
-                    put("model", "openai-codex/gpt-5.1-codex-mini")
+                    put("model", selectedModel)
                 }
                 Log.d(TAG, "patchSessionModel() sending for $sessionKey")
                 val response = sendRpc(id, "sessions.patch", params)
@@ -367,6 +427,10 @@ class OpenClawClient {
 
         val runId = chatPayload.runId ?: return
         val sessionKey = chatPayload.sessionKey
+        if (runId in internalRunIds) {
+            handleInternalRunEvent(runId, chatPayload)
+            return
+        }
 
         val isOurRun = runId in activeRunIds
         val isOurSession = sessionKey != null && sessionKey in subscribedSessionKeys
@@ -426,6 +490,10 @@ class OpenClawClient {
         pendingRpc.values.forEach { it.cancel() }
         pendingRpc.clear()
         activeRunIds.clear()
+        internalRunDeferred.values.forEach { it.completeExceptionally(Exception("Disconnected from Gateway")) }
+        internalRunDeferred.clear()
+        internalRunBuffers.clear()
+        internalRunIds.clear()
 
         if (runsToEmit.isNotEmpty()) {
             scope.launch { 
@@ -437,6 +505,28 @@ class OpenClawClient {
 
         if (shouldReconnect) {
             scheduleReconnect()
+        }
+    }
+
+    private fun handleInternalRunEvent(runId: String, chatPayload: ChatEventPayload) {
+        when (chatPayload.state) {
+            "delta" -> {
+                val text = chatPayload.message?.content?.firstOrNull()?.text ?: return
+                internalRunBuffers[runId]?.append(text)
+            }
+            "final" -> {
+                val finalText = chatPayload.message?.content?.firstOrNull()?.text
+                val resolved = finalText?.takeIf { it.isNotBlank() } ?: internalRunBuffers[runId]?.toString().orEmpty()
+                internalRunDeferred.remove(runId)?.complete(resolved)
+                internalRunBuffers.remove(runId)
+                internalRunIds.remove(runId)
+            }
+            "error" -> {
+                val errMsg = chatPayload.errorMessage ?: "Unknown error"
+                internalRunDeferred.remove(runId)?.completeExceptionally(Exception(errMsg))
+                internalRunBuffers.remove(runId)
+                internalRunIds.remove(runId)
+            }
         }
     }
 
@@ -495,5 +585,14 @@ class OpenClawClient {
         val activeNetwork = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun parseModelsFromText(text: String): List<String> {
+        val regex = Regex("""[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._/-]*""", RegexOption.IGNORE_CASE)
+        return regex.findAll(text)
+            .map { it.value.trim().trimEnd('.', ',', ';', ')') }
+            .distinct()
+            .sorted()
+            .toList()
     }
 }

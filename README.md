@@ -52,6 +52,7 @@ Swipe up on the main screen → tap **Settings** to configure:
 
 - **Gateway URL** — address of your OpenClaw gateway
 - **Auth Token** — gateway authentication token
+- **Selected Model** — optional model override; refreshes from the connected account's available model list
 - **Use local TTS** — toggle between on-device speech and ElevenLabs
 - **ElevenLabs API Key** — required only when ElevenLabs mode is enabled
 - **ElevenLabs Voice ID** — required only when ElevenLabs mode is enabled

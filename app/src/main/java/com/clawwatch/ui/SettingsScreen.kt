@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,14 +57,19 @@ fun SettingsScreen(
 
     val gatewayUrl by viewModel.gatewayUrl.collectAsState()
     val authToken by viewModel.authToken.collectAsState()
+    val selectedModel by viewModel.selectedModel.collectAsState()
     val useLocalTts by viewModel.useLocalTts.collectAsState()
     val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
     val elevenLabsVoiceId by viewModel.elevenLabsVoiceId.collectAsState()
     val assistantVolume by viewModel.assistantVolume.collectAsState()
     val alarmVolume by viewModel.alarmVolume.collectAsState()
+    val availableModels by viewModel.availableModels.collectAsState()
+    val modelsLoading by viewModel.modelsLoading.collectAsState()
+    val modelsError by viewModel.modelsError.collectAsState()
 
     var gatewayDraft by remember(gatewayUrl) { mutableStateOf(gatewayUrl) }
     var authTokenDraft by remember(authToken) { mutableStateOf(authToken) }
+    var selectedModelDraft by remember(selectedModel) { mutableStateOf(selectedModel) }
     var elevenLabsApiKeyDraft by remember(elevenLabsApiKey) { mutableStateOf(elevenLabsApiKey) }
     var elevenLabsVoiceIdDraft by remember(elevenLabsVoiceId) { mutableStateOf(elevenLabsVoiceId) }
     val remoteTtsMissingApiKey = !useLocalTts && elevenLabsApiKey.isBlank()
@@ -75,6 +81,12 @@ fun SettingsScreen(
     }
 
     val listState = rememberScalingLazyListState()
+
+    LaunchedEffect(gatewayUrl, authToken) {
+        if (gatewayUrl.isNotBlank() && authToken.isNotBlank() && availableModels.isEmpty() && !modelsLoading) {
+            viewModel.refreshAvailableModels()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -117,6 +129,69 @@ fun SettingsScreen(
                     secret = true,
                     onValueChange = { authTokenDraft = it },
                     onSave = { value -> scope.launch { viewModel.updateAuthToken(value.trim()) } },
+                )
+            }
+            item { SectionHeader("Model") }
+            item {
+                EditableSettingCard(
+                    label = "Selected Model",
+                    value = selectedModelDraft,
+                    placeholder = "blank = gateway default",
+                    secret = false,
+                    onValueChange = { selectedModelDraft = it },
+                    onSave = { value -> scope.launch { viewModel.updateSelectedModel(value.trim()) } },
+                )
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(0.85f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ActionChip(
+                        label = if (modelsLoading) "Refreshing…" else "Refresh Models",
+                        modifier = Modifier.weight(1f),
+                        onClick = { viewModel.refreshAvailableModels() },
+                    )
+                    if (selectedModel.isNotBlank()) {
+                        ActionChip(
+                            label = "Use Default",
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                selectedModelDraft = ""
+                                viewModel.updateSelectedModel("")
+                            },
+                        )
+                    }
+                }
+            }
+            item {
+                val modelStatus = when {
+                    modelsLoading -> "Loading models from the connected gateway account…"
+                    modelsError != null -> "Model refresh failed: $modelsError"
+                    availableModels.isEmpty() -> "No model list loaded yet."
+                    else -> "Tap a model below to save it for future connections."
+                }
+                val modelStatusColor = when {
+                    modelsLoading -> Color(0xFF888888)
+                    modelsError != null -> Color(0xFFFFB74D)
+                    else -> Color(0xFF888888)
+                }
+                Text(
+                    text = modelStatus,
+                    color = modelStatusColor,
+                    fontSize = 10.sp,
+                    modifier = Modifier.fillMaxWidth(0.85f),
+                )
+            }
+            items(availableModels.size) { index ->
+                val model = availableModels[index]
+                SelectableSettingCard(
+                    label = model,
+                    selected = model == selectedModel,
+                    onClick = {
+                        selectedModelDraft = model
+                        viewModel.updateSelectedModel(model)
+                    },
                 )
             }
 
@@ -336,6 +411,41 @@ private fun ToggleSettingCard(
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
+    }
+}
+
+@Composable
+private fun SelectableSettingCard(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth(0.85f)
+            .background(
+                if (selected) Color(0xFF123244) else Color(0xFF111111),
+                RoundedCornerShape(10.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = Color(0xFFCCCCCC),
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Text(
+                text = "Selected",
+                color = Color(0xFF4FC3F7),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
     }
 }
 
