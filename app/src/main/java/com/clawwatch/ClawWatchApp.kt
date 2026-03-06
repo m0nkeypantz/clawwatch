@@ -20,7 +20,7 @@ class ClawWatchApp : Application() {
     override fun onCreate() {
         super.onCreate()
         settingsStore = SettingsStore(this)
-        openClawClient = OpenClawClient()
+        openClawClient = OpenClawClient(this)
         voiceOutput = VoiceOutput(this)
         locationProvider = LocationProvider(this)
     }

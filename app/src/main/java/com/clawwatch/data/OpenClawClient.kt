@@ -1,5 +1,10 @@
 package com.clawwatch.data
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -18,10 +23,20 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, HANDSHAKING, CONNECTED }
 
 class OpenClawClient {
 
+    constructor(context: Context) {
+        appContext = context.applicationContext
+        connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        registerNetworkCallbacks()
+    }
+
+    private val appContext: Context
+    private val connectivityManager: ConnectivityManager
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private val client = OkHttpClient.Builder()
+        .retryOnConnectionFailure(true)
+        .connectTimeout(12, TimeUnit.SECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
@@ -43,6 +58,56 @@ class OpenClawClient {
     private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
     private var shouldReconnect = false
+    @Volatile
+    private var connectionGeneration = 0
+    @Volatile
+    private var connectInFlight = false
+    @Volatile
+    private var hasInternetNetwork = false
+    @Volatile
+    private var networkRequestRegistered = false
+
+    private val networkRequest = NetworkRequest.Builder()
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        .build()
+
+    private val defaultNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Log.d(TAG, "default network available: $network")
+            hasInternetNetwork = true
+            scheduleReconnect(immediate = true)
+        }
+
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            val usable = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            hasInternetNetwork = usable
+            if (usable) {
+                Log.d(TAG, "default network validated: $network")
+                scheduleReconnect(immediate = true)
+            }
+        }
+
+        override fun onLost(network: Network) {
+            Log.d(TAG, "default network lost: $network")
+            hasInternetNetwork = false
+        }
+    }
+
+    private val bringUpNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Log.d(TAG, "requested network available: $network")
+            hasInternetNetwork = true
+            scheduleReconnect(immediate = true)
+        }
+
+        override fun onLost(network: Network) {
+            Log.d(TAG, "requested network lost: $network")
+            hasInternetNetwork = false
+        }
+    }
 
     fun connect(url: String, token: String) {
         Log.d(TAG, "connect() called")
@@ -52,13 +117,19 @@ class OpenClawClient {
         authToken = token
         shouldReconnect = true
         reconnectAttempt = 0
-        doConnect()
+        connectionGeneration++
+        connectInFlight = false
+        requestInternetTransport()
+        doConnect(connectionGeneration)
     }
 
     fun disconnect() {
         shouldReconnect = false
+        connectionGeneration++
+        connectInFlight = false
         reconnectJob?.cancel()
         reconnectJob = null
+        webSocket?.cancel()
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
         scope.cancel()
@@ -163,7 +234,15 @@ class OpenClawClient {
         }
     }
 
-    private fun doConnect() {
+    private fun doConnect(generation: Int = connectionGeneration) {
+        if (!shouldReconnect || gatewayUrl.isBlank() || authToken.isBlank()) return
+        if (generation != connectionGeneration) return
+        if (connectInFlight) {
+            Log.d(TAG, "doConnect() skipped; connection already in flight")
+            return
+        }
+
+        connectInFlight = true
         _connectionState.value = ConnectionState.CONNECTING
 
         val normalized = gatewayUrl.trim()
@@ -204,12 +283,12 @@ class OpenClawClient {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "onClosed() code=$code reason=$reason")
-                handleDisconnect()
+                handleDisconnect("closed code=$code reason=$reason")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "onFailure() ${t.message}", t)
-                handleDisconnect()
+                handleDisconnect("failure: ${t.message}")
             }
         })
     }
@@ -260,17 +339,18 @@ class OpenClawClient {
                 val response = withTimeout(15_000) { deferred.await() }
                 if (response.ok == true) {
                     Log.d(TAG, "handleChallenge() hello-ok received, CONNECTED")
+                    connectInFlight = false
                     _connectionState.value = ConnectionState.CONNECTED
                     // Re-subscribe to tracking keys upon connection
                     subscribedSessionKeys.forEach { sendSubscription(it) }
                     patchSessionModel()
                 } else {
                     Log.e(TAG, "handleChallenge() connect rejected: ${response.error?.message}")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    failConnection("connect rejected: ${response.error?.message}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "handleChallenge() timeout/error: ${e.message}")
-                _connectionState.value = ConnectionState.DISCONNECTED
+                failConnection("handshake timeout/error: ${e.message}")
             }
         }
     }
@@ -336,9 +416,11 @@ class OpenClawClient {
         return withTimeout(30_000) { deferred.await() }
     }
 
-    private fun handleDisconnect() {
+    private fun handleDisconnect(reason: String) {
+        Log.d(TAG, "handleDisconnect(): $reason")
         val runsToEmit = activeRunIds.toList()
-        
+
+        connectInFlight = false
         _connectionState.value = ConnectionState.DISCONNECTED
         webSocket = null
         pendingRpc.values.forEach { it.cancel() }
@@ -358,14 +440,60 @@ class OpenClawClient {
         }
     }
 
-    private fun scheduleReconnect() {
+    private fun failConnection(reason: String) {
+        Log.w(TAG, "failConnection(): $reason")
+        webSocket?.cancel()
+        handleDisconnect(reason)
+    }
+
+    private fun scheduleReconnect(immediate: Boolean = false) {
+        if (!shouldReconnect || gatewayUrl.isBlank() || authToken.isBlank()) return
+
         reconnectJob?.cancel()
+        val generation = connectionGeneration
         reconnectJob = scope.launch {
-            val delayMs = min(1000L * (1L shl reconnectAttempt.coerceAtMost(5)), 30_000L)
-            reconnectAttempt++
-            delay(delayMs)
-            if (shouldReconnect) {
+            val delayMs = if (immediate) {
+                0L
+            } else {
+                min(1000L * (1L shl reconnectAttempt.coerceAtMost(5)), 30_000L)
+            }
+            if (!immediate) {
+                reconnectAttempt++
+            }
+            if (delayMs > 0L) {
+                Log.d(TAG, "scheduleReconnect() waiting ${delayMs}ms before retry")
+                delay(delayMs)
+            }
+            if (shouldReconnect && generation == connectionGeneration && _connectionState.value == ConnectionState.DISCONNECTED) {
+                requestInternetTransport()
+                doConnect(generation)
             }
         }
+    }
+
+    private fun registerNetworkCallbacks() {
+        hasInternetNetwork = currentNetworkIsUsable()
+        runCatching {
+            connectivityManager.registerDefaultNetworkCallback(defaultNetworkCallback)
+        }.onFailure {
+            Log.w(TAG, "registerDefaultNetworkCallback failed: ${it.message}")
+        }
+        requestInternetTransport()
+    }
+
+    private fun requestInternetTransport() {
+        if (networkRequestRegistered) return
+        runCatching {
+            connectivityManager.requestNetwork(networkRequest, bringUpNetworkCallback)
+            networkRequestRegistered = true
+        }.onFailure {
+            Log.w(TAG, "requestNetwork failed: ${it.message}")
+        }
+    }
+
+    private fun currentNetworkIsUsable(): Boolean {
+        val activeNetwork = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 }
